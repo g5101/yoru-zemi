@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <title>mini-ovice 完成版（マルチプレイ同期）</title>
+    <!-- FirebaseのSDK（v9 compat版）を読み込み -->
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore-compat.js"></script>
+
+    <style>
+        body {
+            font-family: sans-serif;
+            background: #f0f2f5;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+        }
+        h1 { font-size: 1.2rem; color: #333; margin-bottom: 10px; }
+        
+        /* コントロールパネル */
+        .control-panel {
+            background: white;
+            padding: 10px 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 15px;
+            display: flex;
+            gap: 15px;
+            align-items: center;
+        }
+        .control-panel label { font-size: 0.9rem; font-weight: bold; }
+        .control-panel input, .control-panel select { padding: 5px; font-size: 0.9rem; }
+
+        /* バーチャルオフィス空間（マップ） */
+        #office-map {
+            width: 800px;
+            height: 500px;
+            background: #eef2f7;
+            border: 3px solid #ccc;
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+
+        /* 部屋・会議室エリアの区画 */
+        .room {
+            position: absolute;
+            border: 2px dashed #b0c4de;
+            background: rgba(255, 255, 255, 0.6);
+            border-radius: 8px;
+            display: flex;
+            justify-content: center;
+            align-items: flex-end;
+            padding-bottom: 10px;
+            font-weight: bold;
+            color: #555;
+            font-size: 0.9rem;
+        }
+        #room-A { left: 30px; top: 30px; width: 320px; height: 200px; background: rgba(220, 240, 255, 0.5); }
+        #room-B { left: 450px; top: 30px; width: 320px; height: 200px; background: rgba(255, 230, 230, 0.5); }
+        #room-desk { left: 30px; top: 270px; width: 740px; height: 200px; background: rgba(230, 255, 230, 0.5); }
+
+        /* ユーザーアバター（アイコン） */
+        .avatar {
+            position: absolute;
+            width: 60px;
+            height: 60px;
+            background: white;
+            border-radius: 50%;
+            box-shadow: 0 3px 6px rgba(0,0,0,0.2);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            cursor: grab;
+            user-select: none;
+            z-index: 10;
+            transition: left 0.05s ease-out, top 0.05s ease-out; /* スムーズな移動 */
+        }
+        .avatar:active { cursor: grabbing; }
+        
+        .avatar-img {
+            width: 32px;
+            height: 32px;
+            border-radius: 50%;
+            background: #4A90E2;
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            font-size: 0.9rem;
+            position: relative;
+        }
+
+        /* ステータスドット */
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            position: absolute;
+            bottom: 0;
+            right: 0;
+            border: 2px solid white;
+        }
+        .status-available { background: #2ecc71; } /* 対応可（緑） */
+        .status-busy { background: #e74c3c; }      /* 作業中（赤） */
+        .status-away { background: #f1c40f; }      /* 離席中（黄色） */
+
+        .avatar-name {
+            font-size: 0.7rem;
+            margin-top: 2px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            max-width: 56px;
+        }
+
+        /* 一言コメントの吹き出し */
+        .comment-bubble {
+            position: absolute;
+            top: -28px;
+            background: #333;
+            color: white;
+            padding: 2px 6px;
+            font-size: 0.65rem;
+            border-radius: 4px;
+            white-space: nowrap;
+            pointer-events: none;
+        }
+        .comment-bubble::after {
+            content: '';
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            margin-left: -4px;
+            border-width: 4px;
+            border-style: solid;
+            border-color: #333 transparent transparent transparent;
+        }
+
+        /* Meet誘導ポップアップ */
+        #meet-modal {
+            margin-top: 15px;
+            background: #e8f4fd;
+            border: 1px solid #b8daff;
+            padding: 10px 20px;
+            border-radius: 6px;
+            display: none;
+            align-items: center;
+            gap: 15px;
+        }
+        #meet-modal.active { display: flex; }
+        #meet-modal a {
+            background: #1a73e8;
+            color: white;
+            padding: 6px 14px;
+            border-radius: 4px;
+            text-decoration: none;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+        #meet-modal a:hover { background: #1557b0; }
+    </style>
+</head>
+<body>
+
+    <h1>mini-ovice 完成版（インターネット経由で同期）</h1>
+
+    <!-- 自分のステータス・コメント変更パネル -->
+    <div class="control-panel">
+        <div>
+            <label>名前: </label>
+            <input type="text" id="my-name" value="佐藤" style="width: 80px;">
+        </div>
+        <div>
+            <label>ステータス: </label>
+            <select id="my-status">
+                <option value="status-available">対応可</option>
+                <option value="status-busy">作業中</option>
+                <option value="status-away">離席中</option>
+            </select>
+        </div>
+        <div>
+            <label>一言コメント: </label>
+            <input type="text" id="my-comment" value="研究中！" style="width: 130px;">
+        </div>
+    </div>
+
+    <!-- バーチャルオフィス画面 -->
+    <div id="office-map">
+        <div id="room-A" class="room">会議室 A</div>
+        <div id="room-B" class="room">会議室 B</div>
+        <div id="room-desk" class="room">フリーデスクエリア</div>
+
+        <div id="avatar-container"></div>
+    </div>
+
+    <!-- 会議室に入ったときに表示されるMeet案内 -->
+    <div id="meet-modal">
+        <span id="meet-message">会議室に入室しました！</span>
+        <a id="meet-link" href="https://meet.google.com/new" target="_blank">Google Meetを開く</a>
+    </div>
+
+<script>
+    // ==========================================
+    // ★ 1. ここにご自身のFirebase設定を貼り付けてください ★
+    // ==========================================
+    const firebaseConfig = {
+        apiKey: "AIzaSyA5Xmv_j3PkPPzBMewEmWnYEiu6afYc0Qc",
+        authDomain: "yoruzemi-5e489.firebaseapp.com",
+        projectId: "yoruzemi-5e489",
+        storageBucket: "yoruzemi-5e489.firebasestorage.app",
+        messagingSenderId: "1027277059249",
+        appId: "1:1027277059249:web:ca89db99bdadc992f19e90"
+    };
+
+    // Firebase初期化
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    // ユーザー識別用ID（ブラウザごとにランダム生成）
+    const myId = 'user_' + Math.random().toString(36).substr(2, 9);
+    
+    // 初期データ
+    let myData = {
+        name: "佐藤",
+        status: "status-available",
+        comment: "研究中！",
+        x: Math.floor(Math.random() * 400) + 100,
+        y: Math.floor(Math.random() * 150) + 300,
+        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+    };
+
+    // DOM要素
+    const nameInput = document.getElementById('my-name');
+    const statusSelect = document.getElementById('my-status');
+    const commentInput = document.getElementById('my-comment');
+    const avatarContainer = document.getElementById('avatar-container');
+    const meetModal = document.getElementById('meet-modal');
+    const meetMessage = document.getElementById('meet-message');
+    const meetLink = document.getElementById('meet-link');
+
+    // 自分のデータをFirestoreに保存する関数
+    function syncToFirestore() {
+        db.collection("mini_ovice_users").doc(myId).set(myData, { merge: true })
+          .catch((error) => {
+              console.error("データ送信エラー: ", error);
+          });
+    }
+
+    // 入力値変更の反映
+    nameInput.addEventListener('input', () => {
+        myData.name = nameInput.value;
+        syncToFirestore();
+    });
+    statusSelect.addEventListener('change', () => {
+        myData.status = statusSelect.value;
+        syncToFirestore();
+    });
+    commentInput.addEventListener('input', () => {
+        myData.comment = commentInput.value;
+        syncToFirestore();
+    });
+
+    // 初回データ送信
+    syncToFirestore();
+
+    // ==========================================
+    // ★ 2. リアルタイムリスナー（他ユーザーの変更を常時監視）
+    // ==========================================
+    db.collection("mini_ovice_users").onSnapshot((snapshot) => {
+        avatarContainer.innerHTML = '';
+
+        snapshot.forEach((doc) => {
+            let id = doc.id;
+            let u = doc.data();
+
+            let el = document.createElement('div');
+            el.className = 'avatar';
+            el.style.left = u.x + 'px';
+            el.style.top = u.y + 'px';
+
+            el.innerHTML = `
+                <div class="comment-bubble">${u.comment || ''}</div>
+                <div class="avatar-img">
+                    ${(u.name || '名無').charAt(0)}
+                    <div class="status-dot ${u.status || 'status-available'}"></div>
+                </div>
+                <div class="avatar-name">${u.name || ''}</div>
+            `;
+
+            // 自分のアバターだけドラッグ移動できるようにする
+            if (id === myId) {
+                makeDraggable(el);
+            }
+
+            avatarContainer.appendChild(el);
+        });
+    });
+
+    // ドラッグ＆ドロップ移動の仕組み
+    function makeDraggable(element) {
+        let isDragging = false;
+        let startX, startY;
+
+        element.addEventListener('mousedown', (e) => {
+            isDragging = true;
+            startX = e.clientX - myData.x;
+            startY = e.clientY - myData.y;
+            e.preventDefault();
+        });
+
+        document.addEventListener('mousemove', (e) => {
+            if (!isDragging) return;
+            let newX = e.clientX - startX;
+            let newY = e.clientY - startY;
+
+            // マップの枠内に収める制限
+            newX = Math.max(0, Math.min(740, newX));
+            newY = Math.max(0, Math.min(440, newY));
+
+            myData.x = newX;
+            myData.y = newY;
+            element.style.left = newX + 'px';
+            element.style.top = newY + 'px';
+
+            checkArea(newX, newY);
+        });
+
+        document.addEventListener('mouseup', () => {
+            if (isDragging) {
+                isDragging = false;
+                syncToFirestore(); // 置き場所が決まったらサーバーに保存
+            }
+        });
+    }
+
+    // エリア判定（会議室A、会議室Bに入ったらMeet案内を出す）
+    function checkArea(x, y) {
+        if (x >= 30 && x <= 330 && y >= 30 && y <= 210) {
+            meetModal.classList.add('active');
+            meetMessage.textContent = "「会議室 A」に入室中";
+            meetLink.href = "https://meet.google.com/new"; 
+        } 
+        else if (x >= 450 && x <= 750 && y >= 30 && y <= 210) {
+            meetModal.classList.add('active');
+            meetMessage.textContent = "「会議室 B」に入室中";
+            meetLink.href = "https://meet.google.com/new";
+        } 
+        else {
+            meetModal.classList.remove('active');
+        }
+    }
+</script>
+
+</body>
+</html>
